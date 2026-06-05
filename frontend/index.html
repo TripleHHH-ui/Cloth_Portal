@@ -176,7 +176,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.3/p5.min.js"></script>
 <script>
 // ─── Config — set your Railway backend URL here ───────────────────────
-const BACKEND_URL = "https://web-production-140fc.up.railway.app";
+const BACKEND_URL = "https://YOUR_RAILWAY_APP.railway.app";
 
 // ─── MediaPipe loader ─────────────────────────────────────────────────
 let handsReady = false;
@@ -379,27 +379,35 @@ new p5(function(p) {
       const { expanded_prompt } = await expandRes.json();
       status.textContent = 'Prompt ready. Generating image...';
 
-      // Step 2: build Pollinations URL directly (skip backend ping)
-      const safePrompt = encodeURIComponent(expanded_prompt);
-      const seed = Math.floor(Math.random() * 99999);
-      const imageUrl = `https://image.pollinations.ai/prompt/${safePrompt}?model=flux-realism&width=1024&height=768&nologo=true&enhance=true&seed=${seed}`;
-
-      // Step 3: load image with 60s timeout
-      status.textContent = 'Loading image (may take ~20s)...';
-      await withTimeout(
-        new Promise((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => {
-            uploadedMedia = { _el: img, width: img.naturalWidth, height: img.naturalHeight };
-            mediaIsVideo = false;
-            initCloth();
-            resolve();
-          };
-          img.onerror = () => reject(new Error('Image failed to load from Pollinations'));
-          img.src = imageUrl;
+      // Step 2: generate image via Hugging Face (through backend)
+      status.textContent = 'Generating image with AI (20-40s)...';
+      const genRes = await withTimeout(
+        fetch(`${BACKEND_URL}/generate-image`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: expanded_prompt, width: 1024, height: 768 })
         }),
-        60000, 'Image load timed out after 60s'
+        120000, 'Image generation timed out'
       );
+      if (!genRes.ok) {
+        const err = await genRes.json().catch(()=>({}));
+        throw new Error(err.detail || `Generation failed (${genRes.status})`);
+      }
+      const { image_url } = await genRes.json();
+
+      // Step 3: load base64 image onto cloth
+      status.textContent = 'Applying to cloth...';
+      await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          uploadedMedia = { _el: img, width: img.naturalWidth, height: img.naturalHeight };
+          mediaIsVideo = false;
+          initCloth();
+          resolve();
+        };
+        img.onerror = () => reject(new Error('Image render failed'));
+        img.src = image_url;
+      });
 
       status.textContent = 'Done. Drag the cloth to reveal.';
       hidehint();
