@@ -40,6 +40,23 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/test-network")
+async def test_network():
+    """Test if Railway can reach external services."""
+    results = {}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for name, url in [
+            ("huggingface", "https://api-inference.huggingface.co"),
+            ("google", "https://www.google.com"),
+        ]:
+            try:
+                r = await client.get(url)
+                results[name] = f"OK ({r.status_code})"
+            except Exception as e:
+                results[name] = f"FAILED: {str(e)[:80]}"
+    return results
+
+
 @app.post("/expand-prompt")
 async def expand_prompt(req: PromptRequest):
     """Send a short keyword to Claude, get back a detailed image prompt."""
