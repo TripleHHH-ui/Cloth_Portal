@@ -44,16 +44,21 @@ def health():
 async def test_network():
     """Test if Railway can reach external services."""
     results = {}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        for name, url in [
-            ("huggingface", "https://api-inference.huggingface.co"),
-            ("google", "https://www.google.com"),
-        ]:
+    targets = [
+        ("huggingface", "https://api-inference.huggingface.co"),
+        ("huggingface_router", "https://router.huggingface.co"),
+        ("fal_ai", "https://fal.run"),
+        ("replicate", "https://api.replicate.com"),
+        ("together_ai", "https://api.together.xyz"),
+        ("google", "https://www.google.com"),
+    ]
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        for name, url in targets:
             try:
                 r = await client.get(url)
                 results[name] = f"OK ({r.status_code})"
             except Exception as e:
-                results[name] = f"FAILED: {str(e)[:80]}"
+                results[name] = f"FAILED: {str(e)[:60]}"
     return results
 
 
