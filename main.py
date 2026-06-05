@@ -1,4 +1,6 @@
 import os
+import base64
+import httpx
 import anthropic
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,17 +19,19 @@ app.add_middleware(
 )
 
 CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
+HF_TOKEN       = os.environ.get("HF_TOKEN")
+HF_MODEL       = "black-forest-labs/FLUX.1-schnell"
+HF_URL         = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
 
 # ── Request models ────────────────────────────────────────────────────
 
 class PromptRequest(BaseModel):
-    keyword: str          # user's short input, e.g. "Tokyo night"
+    keyword: str
 
 class ImageRequest(BaseModel):
-    prompt: str           # expanded English prompt from Claude
+    prompt: str
     width: int = 1024
     height: int = 768
-    model: str = "flux-realism"
 
 # ── Routes ───────────────────────────────────────────────────────────
 
@@ -38,10 +42,7 @@ def health():
 
 @app.post("/expand-prompt")
 async def expand_prompt(req: PromptRequest):
-    """
-    Send a short keyword to Claude.
-    Claude returns a detailed English image generation prompt.
-    """
+    """Send a short keyword to Claude, get back a detailed image prompt."""
     if not CLAUDE_API_KEY:
         raise HTTPException(status_code=500, detail="CLAUDE_API_KEY not configured")
 
@@ -49,10 +50,9 @@ async def expand_prompt(req: PromptRequest):
 
     system = (
         "You are an expert image prompt engineer. "
-        "When given a short keyword or phrase, you expand it into a single, "
-        "detailed English image generation prompt. "
-        "The prompt should be vivid, specific, and optimized for photorealistic output. "
-        "Focus on architectural subjects, lighting, atmosphere, and camera style. "
+        "When given a short keyword or phrase, expand it into a single detailed "
+        "English image generation prompt. Be vivid and specific. "
+        "Focus on architecture, lighting, atmosphere, and camera style. "
         "Always end with: photorealistic, architectural photography, 8k, high detail. "
         "Return ONLY the prompt text, no explanation, no quotes, no extra formatting."
     )
@@ -70,18 +70,45 @@ async def expand_prompt(req: PromptRequest):
 
 @app.post("/generate-image")
 async def generate_image(req: ImageRequest):
-    """
-    Build a Pollinations.ai URL from the expanded prompt and return it directly.
-    The frontend loads the image — no server-side ping needed.
-    """
-    safe_prompt = req.prompt.replace(" ", "%20").replace(",", "%2C")
-    url = (
-        f"https://image.pollinations.ai/prompt/{safe_prompt}"
-        f"?model={req.model}"
-        f"&width={req.width}"
-        f"&height={req.height}"
-        f"&nologo=true"
-        f"&enhance=true"
-        f"&seed={int(__import__('time').time())}"
-    )
-    return {"image_url": url}
+    """Generate an image via Hugging Face Inference API, return as base64 data URL."""
+    if not HF_TOKEN:
+        raise HTTPException(status_code=500, detail="HF_TOKEN not configured")
+
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "inputs": req.prompt,
+        "parameters": {
+            "width": req.width,
+            "height": req.height,
+            "num_inference_steps": 4,
+        }
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(HF_URL, headers=headers, json=payload)
+
+            # Model may be loading — retry once after 20s
+            if response.status_code == 503:
+                import asyncio
+                await asyncio.sleep(20)
+                response = await client.post(HF_URL, headers=headers, json=payload)
+
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"HF API error {response.status_code}: {response.text[:200]}"
+                )
+
+            # Return image as base64 data URL so frontend can load without CORS issues
+            img_bytes = response.content
+            b64 = base64.b64encode(img_bytes).decode("utf-8")
+            data_url = f"data:image/jpeg;base64,{b64}"
+            return {"image_url": data_url}
+
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Image generation timed out")
+
