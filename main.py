@@ -1,5 +1,4 @@
 import os
-import httpx
 import anthropic
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -72,8 +71,8 @@ async def expand_prompt(req: PromptRequest):
 @app.post("/generate-image")
 async def generate_image(req: ImageRequest):
     """
-    Build a Pollinations.ai URL from the expanded prompt.
-    Verify the image is reachable and return the URL.
+    Build a Pollinations.ai URL from the expanded prompt and return it directly.
+    The frontend loads the image — no server-side ping needed.
     """
     safe_prompt = req.prompt.replace(" ", "%20").replace(",", "%2C")
     url = (
@@ -83,15 +82,6 @@ async def generate_image(req: ImageRequest):
         f"&height={req.height}"
         f"&nologo=true"
         f"&enhance=true"
+        f"&seed={int(__import__('time').time())}"
     )
-
-    # Ping the URL to trigger generation and confirm it responds
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.get(url)
-            if response.status_code != 200:
-                raise HTTPException(status_code=502, detail="Image generation failed")
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Image generation timed out")
-
     return {"image_url": url}
