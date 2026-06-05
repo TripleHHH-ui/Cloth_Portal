@@ -176,7 +176,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.3/p5.min.js"></script>
 <script>
 // ─── Config — set your Railway backend URL here ───────────────────────
-const BACKEND_URL = "https://web-production-140fc.up.railway.app";
+const BACKEND_URL = "https://YOUR_RAILWAY_APP.railway.app";
 
 // ─── MediaPipe loader ─────────────────────────────────────────────────
 let handsReady = false;
@@ -356,45 +356,58 @@ new p5(function(p) {
     btn.disabled = true;
     loader.classList.add('active');
 
+    // Timeout helper: reject after ms
+    function withTimeout(promise, ms, msg) {
+      return Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error(msg)), ms))
+      ]);
+    }
+
     try {
-      // Step 1: expand prompt via Claude
+      // Step 1: expand prompt via Claude (10s timeout)
       status.textContent = 'Expanding prompt with Claude...';
-      const expandRes = await fetch(`${BACKEND_URL}/expand-prompt`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keyword })
-      });
-      if (!expandRes.ok) throw new Error('Prompt expansion failed');
+      const expandRes = await withTimeout(
+        fetch(`${BACKEND_URL}/expand-prompt`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keyword })
+        }),
+        10000, 'Claude request timed out'
+      );
+      if (!expandRes.ok) throw new Error(`Prompt expansion failed (${expandRes.status})`);
       const { expanded_prompt } = await expandRes.json();
+      status.textContent = 'Prompt ready. Generating image...';
 
-      // Step 2: generate image via Pollinations
-      status.textContent = 'Generating image...';
-      const genRes = await fetch(`${BACKEND_URL}/generate-image`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: expanded_prompt, width: 1024, height: 768 })
-      });
-      if (!genRes.ok) throw new Error('Image generation failed');
-      const { image_url } = await genRes.json();
+      // Step 2: build Pollinations URL directly (skip backend ping)
+      const safePrompt = encodeURIComponent(expanded_prompt);
+      const seed = Math.floor(Math.random() * 99999);
+      const imageUrl = `https://image.pollinations.ai/prompt/${safePrompt}?model=flux-realism&width=1024&height=768&nologo=true&enhance=true&seed=${seed}`;
 
-      // Step 3: load image onto cloth
-      status.textContent = 'Loading onto cloth...';
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        uploadedMedia = { _el: img, width: img.naturalWidth, height: img.naturalHeight };
-        mediaIsVideo = false;
-        initCloth();
-        status.textContent = 'Done. Drag the cloth to reveal.';
-        loader.classList.remove('active');
-        btn.disabled = false;
-        hidehint();
-      };
-      img.onerror = () => { throw new Error('Image load failed'); };
-      img.src = image_url;
+      // Step 3: load image with 60s timeout
+      status.textContent = 'Loading image (may take ~20s)...';
+      await withTimeout(
+        new Promise((resolve, reject) => {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => {
+            uploadedMedia = { _el: img, width: img.naturalWidth, height: img.naturalHeight };
+            mediaIsVideo = false;
+            initCloth();
+            resolve();
+          };
+          img.onerror = () => reject(new Error('Image failed to load from Pollinations'));
+          img.src = imageUrl;
+        }),
+        60000, 'Image load timed out after 60s'
+      );
+
+      status.textContent = 'Done. Drag the cloth to reveal.';
+      hidehint();
 
     } catch(err) {
       status.textContent = `Error: ${err.message}`;
+    } finally {
       loader.classList.remove('active');
       btn.disabled = false;
     }
