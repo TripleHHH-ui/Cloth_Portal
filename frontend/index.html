@@ -175,8 +175,9 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.3/p5.min.js"></script>
 <script>
-// ─── Config — set your Railway backend URL here ───────────────────────
+// ─── Config — set your Railway backend URL and HF token here ─────────
 const BACKEND_URL = "https://web-production-140fc.up.railway.app";
+const HF_TOKEN    = "YOUR_HUGGING_FACE_TOKEN";
 
 // ─── MediaPipe loader ─────────────────────────────────────────────────
 let handsReady = false;
@@ -356,7 +357,6 @@ new p5(function(p) {
     btn.disabled = true;
     loader.classList.add('active');
 
-    // Timeout helper: reject after ms
     function withTimeout(promise, ms, msg) {
       return Promise.race([
         promise,
@@ -365,7 +365,7 @@ new p5(function(p) {
     }
 
     try {
-      // Step 1: expand prompt via Claude (10s timeout)
+      // Step 1: expand prompt via Claude (through backend)
       status.textContent = 'Expanding prompt with Claude...';
       const expandRes = await withTimeout(
         fetch(`${BACKEND_URL}/expand-prompt`, {
@@ -373,14 +373,13 @@ new p5(function(p) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ keyword })
         }),
-        10000, 'Claude request timed out'
+        15000, 'Claude request timed out'
       );
       if (!expandRes.ok) throw new Error(`Prompt expansion failed (${expandRes.status})`);
       const { expanded_prompt } = await expandRes.json();
-      status.textContent = 'Prompt ready. Generating image...';
 
-      // Step 2: generate image via Hugging Face (through backend)
-      status.textContent = 'Generating image with AI (20-40s)...';
+      // Step 2: generate image via fal.ai (through backend, token stays secret)
+      status.textContent = 'Generating image (15-30s)...';
       const genRes = await withTimeout(
         fetch(`${BACKEND_URL}/generate-image`, {
           method: 'POST',
@@ -390,12 +389,12 @@ new p5(function(p) {
         120000, 'Image generation timed out'
       );
       if (!genRes.ok) {
-        const err = await genRes.json().catch(()=>({}));
-        throw new Error(err.detail || `Generation failed (${genRes.status})`);
+        const errData = await genRes.json().catch(() => ({}));
+        throw new Error(errData.detail || `Generation failed (${genRes.status})`);
       }
       const { image_url } = await genRes.json();
 
-      // Step 3: load base64 image onto cloth
+      // Step 3: load base64 onto cloth
       status.textContent = 'Applying to cloth...';
       await new Promise((resolve, reject) => {
         const img = new Image();
