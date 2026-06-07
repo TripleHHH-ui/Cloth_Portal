@@ -613,7 +613,8 @@ new p5(function(p) {
           if (tornQuads[r * COLS + c]) continue;
           const tl=pts[idx(r,c)], tr=pts[idx(r,c+1)];
           const bl=pts[idx(r+1,c)], br=pts[idx(r+1,c+1)];
-          if (quadArea(tl,tr,br,bl) > restArea * 1.08) tornQuads[r * COLS + c] = true;
+          const qa = quadArea(tl,tr,br,bl);
+          if (qa > restArea * 1.08 || qa < restArea * 0.15) tornQuads[r * COLS + c] = true;
         }
       }
       return;
