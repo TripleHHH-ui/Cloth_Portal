@@ -19,9 +19,8 @@ app.add_middleware(
 )
 
 CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
-HF_TOKEN       = os.environ.get("HF_TOKEN")
-HF_MODEL       = "black-forest-labs/FLUX.1-schnell"
-HF_URL         = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+FAL_API_KEY    = os.environ.get("FAL_API_KEY")
+FAL_URL        = "https://fal.run/fal-ai/flux/schnell"
 
 # ── Request models ────────────────────────────────────────────────────
 
@@ -38,28 +37,6 @@ class ImageRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-
-@app.get("/test-network")
-async def test_network():
-    """Test if Railway can reach external services."""
-    results = {}
-    targets = [
-        ("huggingface", "https://api-inference.huggingface.co"),
-        ("huggingface_router", "https://router.huggingface.co"),
-        ("fal_ai", "https://fal.run"),
-        ("replicate", "https://api.replicate.com"),
-        ("together_ai", "https://api.together.xyz"),
-        ("google", "https://www.google.com"),
-    ]
-    async with httpx.AsyncClient(timeout=8.0) as client:
-        for name, url in targets:
-            try:
-                r = await client.get(url)
-                results[name] = f"OK ({r.status_code})"
-            except Exception as e:
-                results[name] = f"FAILED: {str(e)[:60]}"
-    return results
 
 
 @app.post("/expand-prompt")
@@ -92,45 +69,40 @@ async def expand_prompt(req: PromptRequest):
 
 @app.post("/generate-image")
 async def generate_image(req: ImageRequest):
-    """Generate an image via Hugging Face Inference API, return as base64 data URL."""
-    if not HF_TOKEN:
-        raise HTTPException(status_code=500, detail="HF_TOKEN not configured")
+    """Generate image via fal.ai FLUX, return as base64 data URL."""
+    if not FAL_API_KEY:
+        raise HTTPException(status_code=500, detail="FAL_API_KEY not configured")
 
     headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",
+        "Authorization": f"Key {FAL_API_KEY}",
         "Content-Type": "application/json",
     }
     payload = {
-        "inputs": req.prompt,
-        "parameters": {
-            "width": req.width,
-            "height": req.height,
-            "num_inference_steps": 4,
-        }
+        "prompt": req.prompt,
+        "image_size": {"width": req.width, "height": req.height},
+        "num_inference_steps": 4,
+        "num_images": 1,
+        "enable_safety_checker": False,
     }
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(HF_URL, headers=headers, json=payload)
-
-            # Model may be loading — retry once after 20s
-            if response.status_code == 503:
-                import asyncio
-                await asyncio.sleep(20)
-                response = await client.post(HF_URL, headers=headers, json=payload)
+            response = await client.post(FAL_URL, headers=headers, json=payload)
 
             if response.status_code != 200:
                 raise HTTPException(
                     status_code=502,
-                    detail=f"HF API error {response.status_code}: {response.text[:200]}"
+                    detail=f"fal.ai error {response.status_code}: {response.text[:200]}"
                 )
 
-            # Return image as base64 data URL so frontend can load without CORS issues
-            img_bytes = response.content
-            b64 = base64.b64encode(img_bytes).decode("utf-8")
-            data_url = f"data:image/jpeg;base64,{b64}"
-            return {"image_url": data_url}
+            data = response.json()
+            # fal.ai returns { images: [{ url: "https://..." }] }
+            image_url = data["images"][0]["url"]
+
+            # Fetch image and return as base64 to avoid frontend CORS issues
+            img_response = await client.get(image_url)
+            b64 = base64.b64encode(img_response.content).decode("utf-8")
+            return {"image_url": f"data:image/jpeg;base64,{b64}"}
 
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Image generation timed out")
-
