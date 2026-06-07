@@ -40,6 +40,13 @@
     transition: background 0.2s;
   }
   #btn-start:hover { background: rgba(255,255,255,0.08); }
+  #btn-skip {
+    background: transparent; border: none;
+    color: rgba(255,255,255,0.35);
+    font-size: 11px; letter-spacing: 0.12em;
+    padding: 8px 20px; cursor: pointer;
+  }
+  #btn-skip:hover { color: rgba(255,255,255,0.6); }
 
   /* ── Eye toggle ── */
   #eye-btn {
@@ -138,8 +145,9 @@
 <!-- ── Start screen ── -->
 <div id="start-screen">
   <h1>Cloth Portal<br>AI Reveal</h1>
-  <p>Camera permission required.<br>Type a scene, AI generates the image,<br>drag the cloth to reveal it.</p>
-  <button id="btn-start">START</button>
+  <p>Type a scene, AI generates the image,<br>drag the cloth to reveal it.</p>
+  <button id="btn-start">START WITH CAMERA</button>
+  <button id="btn-skip">SKIP CAMERA</button>
 </div>
 
 <!-- ── Eye toggle ── -->
@@ -147,6 +155,7 @@
 
 <!-- ── UI panel ── -->
 <div id="ui-panel">
+  <button class="ui-btn" id="mode-btn">Mode: Cloth Surface ↕</button>
   <label class="ui-btn" style="cursor:pointer">
     Upload Media
     <input type="file" id="file-input" accept="image/*,video/*" style="display:none">
@@ -177,7 +186,7 @@
 <script>
 // ─── Config — set your Railway backend URL and HF token here ─────────
 const BACKEND_URL = "https://web-production-140fc.up.railway.app";
-const HF_TOKEN    = "YOUR_HUGGING_FACE_TOKEN";
+const HF_TOKEN    = "PASTE_YOUR_HF_TOKEN_HERE";
 
 // ─── MediaPipe loader ─────────────────────────────────────────────────
 let handsReady = false;
@@ -199,13 +208,13 @@ function loadMediaPipe(callback) {
 new p5(function(p) {
 
   // ── Cloth config ──
-  const COLS       = 48;
-  const ROWS       = 42;
-  const GRAVITY    = 0.07;
-  const FRICTION   = 0.96;
-  const ITERATIONS = 18;
-  const STIFFNESS  = 0.55;
-  const GRAB_RADIUS = 160;
+  const COLS       = 260;
+  const ROWS       = 160;
+  const GRAVITY    = 0.045;
+  const FRICTION   = 0.982;
+  const ITERATIONS = 26;
+  const STIFFNESS  = 0.68;
+  const GRAB_RADIUS = 200;
   const PINCH_DOWN  = 0.055;
   const PINCH_UP    = 0.085;
   const SEAM        = 0.5;
@@ -223,9 +232,12 @@ new p5(function(p) {
 
   let prevHands = [], curHands = [];
   let flying = false, targetYOffset = 0, restoreForce = 0.0011;
+  let tornQuads = [];
+  let revealLastX = -1, revealLastY = -1; // for area-drag in Mode B
 
   let uiVisible  = true;
   let hintFaded  = false;
+  let mode = 'surface'; // 'surface' = Mode A (media on cloth), 'reveal' = Mode B (media behind cloth)
 
   // ── Setup ──
   p.setup = function() {
@@ -280,20 +292,34 @@ new p5(function(p) {
   function initCloth() {
     let aspect = uploadedMedia ? (uploadedMedia.width / uploadedMedia.height) : (4/3);
     if (!isFinite(aspect) || aspect <= 0) aspect = 4/3;
-    const maxW = p.width * 0.85, maxH = p.height * 0.55;
-    if (maxW / aspect > maxH) { clothH = maxH; clothW = maxH * aspect; }
-    else { clothW = maxW; clothH = maxW / aspect; }
-    clothX = (p.width  - clothW) / 2;
-    clothY =  p.height * 0.12;
+
+    if (mode === 'reveal') {
+      // Mode B: fullscreen cloth
+      clothW = p.width;
+      clothH = p.height;
+      clothX = 0;
+      clothY = 0;
+    } else {
+      // Mode A: cloth sized to media, centered
+      const maxW = p.width * 0.85, maxH = p.height * 0.55;
+      if (maxW / aspect > maxH) { clothH = maxH; clothW = maxH * aspect; }
+      else { clothW = maxW; clothH = maxW / aspect; }
+      clothX = (p.width  - clothW) / 2;
+      clothY =  p.height * 0.12;
+    }
 
     pts = []; sticks = [];
     for (let r = 0; r <= ROWS; r++) {
       for (let c = 0; c <= COLS; c++) {
         const x = clothX + (c / COLS) * clothW;
         const y = clothY + (r / ROWS) * clothH;
-        const pinned = (r === 0);
-        const ox = pinned ? 0 : p.random(-20, 20);
-        const oy = pinned ? 0 : p.random(-35, 5);
+        // Mode B: pin all 4 edges so cloth is fixed like a wall hanging
+        const pinned = (mode === 'reveal')
+          ? (r === 0 || r === ROWS || c === 0 || c === COLS)
+          : (r === 0);
+        // Mode B: start flat (no offset) so cloth fills screen from the start
+        const ox = (pinned || mode === 'reveal') ? 0 : p.random(-20, 20);
+        const oy = (pinned || mode === 'reveal') ? 0 : p.random(-35, 5);
         pts.push({ x, y, px: x + ox, py: y + oy, pinned });
       }
     }
@@ -306,6 +332,7 @@ new p5(function(p) {
     }
     flying = false; targetYOffset = 0; restoreForce = 0.0011;
     grabbedPts = [];
+    tornQuads = new Array(ROWS * COLS).fill(false);
   }
 
   function idx(r, c) { return r * (COLS + 1) + c; }
@@ -422,6 +449,12 @@ new p5(function(p) {
   // ── Controls ──
   document.getElementById('flip-btn').addEventListener('click', () => { camFlipped = !camFlipped; });
   document.getElementById('zoom-slider').addEventListener('input', e => { mediaZoom = parseFloat(e.target.value); });
+  document.getElementById('mode-btn').addEventListener('click', () => {
+    mode = (mode === 'surface') ? 'reveal' : 'surface';
+    document.getElementById('mode-btn').textContent =
+      mode === 'surface' ? 'Mode: Cloth Surface ↕' : 'Mode: Background Reveal ↕';
+    initCloth();
+  });
   document.getElementById('eye-btn').addEventListener('click', () => {
     uiVisible = !uiVisible;
     document.getElementById('ui-panel').style.display  = uiVisible ? 'flex' : 'none';
@@ -447,6 +480,10 @@ new p5(function(p) {
   };
 
   function tryGrab(mx, my, hid) {
+    if (mode === 'reveal') {
+      revealLastX = mx; revealLastY = my;
+      return; // Mode B uses area-drag, no grabbedPts needed
+    }
     let best = Infinity, bi = -1;
     for (let i = 0; i < pts.length; i++) {
       if (pts[i].pinned) continue;
@@ -456,11 +493,31 @@ new p5(function(p) {
     if (bi >= 0) grabbedPts.push({ ptIdx: bi, handIdx: hid });
   }
   function moveGrab(mx, my, hid) {
+    if (mode === 'reveal') {
+      if (revealLastX < 0) { revealLastX = mx; revealLastY = my; return; }
+      const dx = mx - revealLastX, dy = my - revealLastY;
+      const INFLUENCE = 320;
+      for (let i = 0; i < pts.length; i++) {
+        if (pts[i].pinned) continue;
+        const d = Math.hypot(pts[i].x - mx, pts[i].y - my);
+        if (d < INFLUENCE) {
+          const t = 1 - d / INFLUENCE;
+          const f = t * t * t; // cubic falloff — strong near cursor, tapers off
+          pts[i].x += dx * f;
+          pts[i].y += dy * f;
+          pts[i].px += dx * f * 0.4; // partial velocity carry for fluid feel
+          pts[i].py += dy * f * 0.4;
+        }
+      }
+      revealLastX = mx; revealLastY = my;
+      return;
+    }
     for (let g of grabbedPts) {
       if (g.handIdx === hid) { pts[g.ptIdx].x = mx; pts[g.ptIdx].y = my; pts[g.ptIdx].px = mx; pts[g.ptIdx].py = my; }
     }
   }
   function releaseGrab(hid) {
+    if (mode === 'reveal') { revealLastX = -1; revealLastY = -1; return; }
     const remaining = [];
     for (let g of grabbedPts) {
       if (g.handIdx === hid) {
@@ -515,6 +572,54 @@ new p5(function(p) {
 
   // ── Physics ──
   function updateCloth() {
+    // Mode B: fluid tear physics — 4 edges pinned, elastic restore, permanent tear tracking
+    if (mode === 'reveal') {
+      const revealGrabbedSet = new Set(grabbedPts.map(g => g.ptIdx));
+      const DAMP_B   = 0.72;
+      const STIFF_B  = 0.10;
+      const RESTORE_B = 0.002;
+
+      for (let i = 0; i < pts.length; i++) {
+        const pt = pts[i];
+        if (pt.pinned) continue;
+        if (revealGrabbedSet.has(i)) continue;
+        const r = Math.floor(i / (COLS + 1));
+        const c = i % (COLS + 1);
+        const ox = clothX + (c / COLS) * clothW;
+        const oy = clothY + (r / ROWS) * clothH;
+        const vx = (pt.x - pt.px) * DAMP_B;
+        const vy = (pt.y - pt.py) * DAMP_B;
+        pt.px = pt.x; pt.py = pt.y;
+        pt.x += vx + (ox - pt.x) * RESTORE_B;
+        pt.y += vy + (oy - pt.y) * RESTORE_B;
+      }
+
+      for (let iter = 0; iter < 4; iter++) {
+        for (let s of sticks) {
+          const pa = pts[s.a], pb = pts[s.b];
+          const dx = pb.x - pa.x, dy = pb.y - pa.y;
+          const dist = Math.sqrt(dx*dx + dy*dy) || 0.001;
+          const diff = (dist - s.len) / dist * STIFF_B;
+          const mx = dx * diff * 0.5, my = dy * diff * 0.5;
+          if (!pa.pinned && !revealGrabbedSet.has(s.a)) { pa.x += mx; pa.y += my; }
+          if (!pb.pinned && !revealGrabbedSet.has(s.b)) { pb.x -= mx; pb.y -= my; }
+        }
+      }
+
+      // Mark quads as permanently torn when sufficiently stretched
+      const restArea = (clothW / COLS) * (clothH / ROWS);
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          if (tornQuads[r * COLS + c]) continue;
+          const tl=pts[idx(r,c)], tr=pts[idx(r,c+1)];
+          const bl=pts[idx(r+1,c)], br=pts[idx(r+1,c+1)];
+          if (quadArea(tl,tr,br,bl) > restArea * 1.08) tornQuads[r * COLS + c] = true;
+        }
+      }
+      return;
+    }
+
+    // Mode A: full physics
     const noise  = p.noise(p.frameCount * 0.008);
     const windX  = (noise - 0.5) * 0.3;
     const windY  = p.noise(p.frameCount * 0.006 + 100) * 0.1;
@@ -537,6 +642,7 @@ new p5(function(p) {
       pt.y += vy + (origY - pt.y) * (flying && r < 4 ? 0.022 : restoreForce);
     }
 
+    const grabbedSet = new Set(grabbedPts.map(g => g.ptIdx));
     for (let iter = 0; iter < ITERATIONS; iter++) {
       for (let s of sticks) {
         const pa = pts[s.a], pb = pts[s.b];
@@ -544,8 +650,8 @@ new p5(function(p) {
         const dist = Math.sqrt(dx*dx + dy*dy) || 0.001;
         const diff = (dist - s.len) / dist * STIFFNESS;
         const mx = dx * diff * 0.5, my = dy * diff * 0.5;
-        if (!pa.pinned && !grabbedPts.some(g=>g.ptIdx===pts.indexOf(pa))) { pa.x += mx; pa.y += my; }
-        if (!pb.pinned && !grabbedPts.some(g=>g.ptIdx===pts.indexOf(pb))) { pb.x -= mx; pb.y -= my; }
+        if (!pa.pinned && !grabbedSet.has(s.a)) { pa.x += mx; pa.y += my; }
+        if (!pb.pinned && !grabbedSet.has(s.b)) { pb.x -= mx; pb.y -= my; }
       }
     }
   }
@@ -659,42 +765,104 @@ new p5(function(p) {
     updateCloth();
     p.background(0);
 
-    // Layer 1: fullscreen camera
-    if (cam) drawCamFullscreen(camFlipped);
-    else { p.background(18); }
+    if (mode === 'surface') {
+      // ── MODE A: media mapped onto cloth surface ──
 
-    // Layer 2: media mapped onto cloth (follows deformation)
-    if (uploadedMedia) {
-      drawMediaOnCloth(uploadedMedia._el, uploadedMedia.width, uploadedMedia.height);
+      // Layer 1: fullscreen camera
+      if (cam) drawCamFullscreen(camFlipped);
+      else p.background(18);
+
+      // Layer 2: media on cloth
+      if (uploadedMedia) {
+        drawMediaOnCloth(uploadedMedia._el, uploadedMedia.width, uploadedMedia.height);
+      } else {
+        drawClothPlaceholder();
+      }
+
+      // Layer 3: optical camouflage (only when no media)
+      if (cam && !uploadedMedia) {
+        const g = camGraphics;
+        g.clear();
+        drawCamLayer(g, camFlipped);
+        const ctx = p.drawingContext;
+        ctx.save(); clipToCloth(ctx);
+        p.image(g, 0, 0, p.width, p.height);
+        ctx.restore();
+      }
+
     } else {
-      // Placeholder dark cloth area + hint
-      p.push(); p.noStroke(); p.fill(0, 0, 0, 150);
-      p.beginShape();
-      for (let c=0;c<=COLS;c++) { const pt=pts[idx(0,c)]; p.vertex(pt.x,pt.y); }
-      for (let r=1;r<=ROWS;r++) { const pt=pts[idx(r,COLS)]; p.vertex(pt.x,pt.y); }
-      for (let c=COLS-1;c>=0;c--) { const pt=pts[idx(ROWS,c)]; p.vertex(pt.x,pt.y); }
-      for (let r=ROWS-1;r>=1;r--) { const pt=pts[idx(r,0)]; p.vertex(pt.x,pt.y); }
-      p.endShape(p.CLOSE);
-      const cx = pts.reduce((s,pt)=>s+pt.x,0)/pts.length;
-      const cy = pts.reduce((s,pt)=>s+pt.y,0)/pts.length;
-      p.fill(255,255,255,55); p.textAlign(p.CENTER,p.CENTER); p.textSize(12);
-      p.text('Type a scene below or upload media', cx, cy);
-      p.pop();
-    }
+      // ── MODE B: transparent cloth, pull to reveal fixed background media ──
 
-    // Layer 3: optical camouflage — only when no media uploaded
-    if (cam && !uploadedMedia) {
-      const g = camGraphics;
-      g.clear();
-      drawCamLayer(g, camFlipped);
+      // Layer 1: fullscreen camera (always visible everywhere)
+      if (cam) drawCamFullscreen(camFlipped);
+      else p.background(18);
+
+      // Layer 2: background media fixed fullscreen (always drawn)
+      if (uploadedMedia) {
+        drawMediaFullscreen(uploadedMedia._el, uploadedMedia.width, uploadedMedia.height);
+      } else {
+        // Placeholder: dark overlay with hint text
+        p.push();
+        p.noStroke(); p.fill(0, 0, 0, 160);
+        p.rect(0, 0, p.width, p.height);
+        p.fill(255,255,255,60); p.textAlign(p.CENTER, p.CENTER); p.textSize(13);
+        p.text('Upload or generate an image to reveal', p.width/2, p.height/2);
+        p.pop();
+      }
+
+      // Layer 3: cloth per-quad — tornQuads permanently show background
+      if (cam) drawCamLayer(camGraphics, camFlipped);
       const ctx = p.drawingContext;
-      ctx.save();
-      clipToCloth(ctx);
-      p.image(g, 0, 0, p.width, p.height);
-      ctx.restore();
+      const imgSrc = cam ? camGraphics.elt : null;
+      const restArea = (clothW / COLS) * (clothH / ROWS);
+      let tornCount = 0;
+      p.noStroke();
+
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          if (tornQuads[r * COLS + c]) { tornCount++; continue; } // permanently torn — background shows
+          const tl=pts[idx(r,c)], tr=pts[idx(r,c+1)];
+          const bl=pts[idx(r+1,c)], br=pts[idx(r+1,c+1)];
+
+          if (imgSrc) {
+            // camera texture per-quad (optical camouflage)
+            const u0=(c/COLS)*p.width, u1=((c+1)/COLS)*p.width;
+            const v0=(r/ROWS)*p.height, v1=((r+1)/ROWS)*p.height;
+            drawTriangle(ctx,imgSrc, tl.x,tl.y,tr.x,tr.y,bl.x,bl.y, u0,v0,u1,v0,u0,v1);
+            drawTriangle(ctx,imgSrc, tr.x,tr.y,br.x,br.y,bl.x,bl.y, u1,v0,u1,v1,u0,v1);
+          } else {
+            p.fill(38, 38, 42, 240);
+            p.beginShape(); p.vertex(tl.x,tl.y); p.vertex(tr.x,tr.y);
+            p.vertex(br.x,br.y); p.vertex(bl.x,bl.y); p.endShape(p.CLOSE);
+          }
+
+          // Wrinkle shading on stretched quads
+          const ratio = quadArea(tl,tr,br,bl) / restArea;
+          if (ratio < 0.93) {
+            p.fill(0,0,0, p.map(ratio, 0.93, 0.3, 0, 150, true));
+            p.beginShape(); p.vertex(tl.x,tl.y); p.vertex(tr.x,tr.y);
+            p.vertex(br.x,br.y); p.vertex(bl.x,bl.y); p.endShape(p.CLOSE);
+          }
+        }
+      }
+
+      // Center hint — only when cloth is untorn
+      if (tornCount === 0) {
+        const cx = clothX + clothW / 2, cy = clothY + clothH / 2;
+        p.push();
+        p.drawingContext.setLineDash([8, 10]);
+        p.stroke(255,255,255,100); p.strokeWeight(1.2);
+        p.line(cx, clothY + clothH * 0.12, cx, clothY + clothH * 0.88);
+        p.drawingContext.setLineDash([]);
+        p.fill(255,255,255,65); p.noStroke();
+        p.textAlign(p.CENTER, p.CENTER); p.textSize(11);
+        p.text('drag to tear', cx, cy);
+        p.pop();
+      }
     }
 
-    // Layer 4: wrinkle shading
+    // Layer 4: wrinkle shading (Mode A only)
+    if (mode === 'surface') {
     p.noStroke();
     for (let r=0;r<ROWS;r++) {
       for (let c=0;c<COLS;c++) {
@@ -712,14 +880,17 @@ new p5(function(p) {
         p.endShape(p.CLOSE);
       }
     }
+    } // end Mode A shading
 
-    // Layer 5: cloth edge glow
+    // Layer 5: cloth edge glow (Mode A only)
+    if (mode === 'surface') {
     p.noFill();
     p.stroke(0,0,0,35); p.strokeWeight(5); drawClothEdge();
     p.drawingContext.shadowBlur = 10;
     p.drawingContext.shadowColor = 'rgba(255,255,255,0.45)';
     p.stroke(255,255,255,190); p.strokeWeight(1.5); drawClothEdge();
     p.drawingContext.shadowBlur = 0;
+    }
 
     // Hand dots
     for (const h of curHands) {
@@ -729,10 +900,55 @@ new p5(function(p) {
     }
   };
 
+  // ── Mode B: draw media fullscreen fixed ──
+  function drawMediaFullscreen(el, mw, mh) {
+    if (!mw || !mh) return;
+    const ctx = p.drawingContext;
+    const aspect = mw / mh;
+    let dw, dh;
+    if (p.width / p.height > aspect) { dw = p.width; dh = p.width / aspect; }
+    else { dh = p.height; dw = p.height * aspect; }
+    const dx = (p.width - dw) / 2, dy = (p.height - dh) / 2;
+    ctx.drawImage(el, dx, dy, dw, dh);
+  }
+
+  // ── Mode A: placeholder when no media ──
+  function drawClothPlaceholder() {
+    p.push(); p.noStroke(); p.fill(0,0,0,150);
+    p.beginShape();
+    for (let c=0;c<=COLS;c++) { const pt=pts[idx(0,c)]; p.vertex(pt.x,pt.y); }
+    for (let r=1;r<=ROWS;r++) { const pt=pts[idx(r,COLS)]; p.vertex(pt.x,pt.y); }
+    for (let c=COLS-1;c>=0;c--) { const pt=pts[idx(ROWS,c)]; p.vertex(pt.x,pt.y); }
+    for (let r=ROWS-1;r>=1;r--) { const pt=pts[idx(r,0)]; p.vertex(pt.x,pt.y); }
+    p.endShape(p.CLOSE);
+    const cx = pts.reduce((s,pt)=>s+pt.x,0)/pts.length;
+    const cy = pts.reduce((s,pt)=>s+pt.y,0)/pts.length;
+    p.fill(255,255,255,55); p.textAlign(p.CENTER,p.CENTER); p.textSize(12);
+    p.text('Type a scene below or upload media', cx, cy);
+    p.pop();
+  }
+
   // ── Start button ──
-  document.getElementById('btn-start').addEventListener('click', () => {
+  function dismissStart() {
     document.getElementById('start-screen').style.display = 'none';
+  }
+
+  document.getElementById('btn-start').addEventListener('click', () => {
+    dismissStart();
     startCamera('environment');
+  });
+  document.getElementById('btn-start').addEventListener('touchend', (e) => {
+    e.preventDefault();
+    dismissStart();
+    startCamera('environment');
+  });
+
+  document.getElementById('btn-skip').addEventListener('click', () => {
+    dismissStart();
+  });
+  document.getElementById('btn-skip').addEventListener('touchend', (e) => {
+    e.preventDefault();
+    dismissStart();
   });
 
 }); // end p5
